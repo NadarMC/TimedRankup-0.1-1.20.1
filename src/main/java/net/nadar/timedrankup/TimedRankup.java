@@ -2,25 +2,29 @@ package net.nadar.timedrankup;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.mojang.authlib.Agent;
+import com.mojang.authlib.GameProfileRepository;
+import com.mojang.authlib.ProfileLookupCallback;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.luckperms.api.LuckPerms;
 import net.luckperms.api.LuckPermsProvider;
 import net.luckperms.api.model.group.Group;
-import net.luckperms.api.model.group.GroupManager;
 import net.luckperms.api.model.user.User;
-import net.luckperms.api.node.Node;
 import net.luckperms.api.query.QueryOptions;
+import net.minecraft.command.CommandSource;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
+import net.minecraft.util.UserCache;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -36,6 +40,30 @@ public class TimedRankup implements ModInitializer {
 	private static final String CONFIG_FILE_PATH = "config/TimedRankup/timedrankup_ranks.json";
 	private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 	private List<RankConfig> rankConfigs;
+	private final UserCache userCache;
+
+	// Tab completion for player names
+	private static final SuggestionProvider<ServerCommandSource> PLAYER_SUGGESTIONS = (context, builder) -> {
+		MinecraftServer server = context.getSource().getServer();
+		return CommandSource.suggestMatching(server.getPlayerManager().getPlayerList().stream().map(ServerPlayerEntity::getName).map(Text::getString), builder);
+	};
+
+	public TimedRankup() {
+		// Instantiate GameProfileRepository (you might need to provide necessary dependencies)
+		GameProfileRepository profileRepository = new GameProfileRepository() {
+			@Override
+			public void findProfilesByNames(String[] names, Agent agent, ProfileLookupCallback callback) {
+
+			}
+		};
+
+		// Specify the directory for user cache data
+		File cacheDirectory = new File("timedrankup");
+
+		// Instantiate UserCache with the created objects
+		userCache = new UserCache(profileRepository, cacheDirectory);
+	}
+
 
 	@Override
 	public void onInitialize() {
@@ -92,7 +120,7 @@ public class TimedRankup implements ModInitializer {
 		}
 	}
 
-	private static final long SAVE_INTERVAL_SECONDS = 900; // Save every 900 seconds, or 15mins
+	private static final long SAVE_INTERVAL_SECONDS = 15; // Update every 15 seconds
 	private long lastSaveTime = 0;
 
 	private void onServerTick(MinecraftServer server) {
@@ -128,7 +156,7 @@ public class TimedRankup implements ModInitializer {
 
 			String currentRank = getCurrentRank(player.getName().getString());
 
-            String maxRank = getMaxRank(); // Dynamically determine the maximum rank
+			String maxRank = getMaxRank(); // Dynamically determine the maximum rank
 
 			if (currentRank != null) {
 				// Check if the player has reached the maximum rank
@@ -202,39 +230,29 @@ public class TimedRankup implements ModInitializer {
 			return null;
 		}
 
-		//LOGGER.info("Retrieving current rank for player: {}", playerName);
 		User user = luckPerms.getUserManager().getUser(playerName);
 		if (user == null) {
 			LOGGER.error("User '{}' not found.", playerName);
 			return null;
 		}
 
-		//LOGGER.info("User '{}' found.", playerName);
-
-		// Check if player's LuckPerms groups correspond to any rank
 		List<Group> inheritedGroups = (List<Group>) user.getInheritedGroups(QueryOptions.nonContextual());
 		for (Group group : inheritedGroups) {
 			String groupName = group.getName();
-			//LOGGER.info("Checking inherited group: {}", groupName);
 			for (RankConfig rankConfig : rankConfigs) {
 				if (rankConfig.name.equalsIgnoreCase(groupName)) {
-					//LOGGER.info("Match found. Rank: {}", groupName);
 					return groupName;
 				}
 			}
-			//LOGGER.info("Does group '{}' match any rank name? false", groupName);
 		}
 
-		// Assign the "Pioneer" rank if the player's playtime exceeds its threshold
 		long playerPlaytime = playerPlaytimes.getOrDefault(user.getUniqueId(), 0L);
 		for (RankConfig rankConfig : rankConfigs) {
 			if (playerPlaytime >= rankConfig.playtimeThreshold) {
-				//LOGGER.info("Player {} has exceeded playtime threshold for rank: {}", playerName, rankConfig.name);
 				return rankConfig.name;
 			}
 		}
 
-		//LOGGER.error("No matching rank found for player: {}", playerName);
 		return null;
 	}
 
@@ -304,6 +322,21 @@ public class TimedRankup implements ModInitializer {
 															)
 											)
 							)
+							.then(
+									LiteralArgumentBuilder.<ServerCommandSource>literal("forceupgrade")
+											.executes(context -> forceUpgrade(context.getSource()))
+							)
+							.then(
+									LiteralArgumentBuilder.<ServerCommandSource>literal("listranks")
+											.executes(context -> listRanks(context.getSource()))
+							)
+							.then(
+									LiteralArgumentBuilder.<ServerCommandSource>literal("removerank")
+											.then(
+													RequiredArgumentBuilder.<ServerCommandSource, String>argument("name", StringArgumentType.word())
+															.executes(context -> removeRank(context.getSource(), StringArgumentType.getString(context, "name")))
+											)
+							)
 			);
 
 			dispatcher.register(
@@ -311,6 +344,7 @@ public class TimedRankup implements ModInitializer {
 							.executes(context -> viewOwnPlaytime(context.getSource()))
 							.then(
 									RequiredArgumentBuilder.<ServerCommandSource, String>argument("player", StringArgumentType.word())
+											.suggests(PLAYER_SUGGESTIONS) // Tab completion for player names
 											.executes(context -> viewPlayerPlaytime(context.getSource(), StringArgumentType.getString(context, "player")))
 							)
 			);
@@ -379,6 +413,44 @@ public class TimedRankup implements ModInitializer {
 			source.sendFeedback(formatErrorMessage(), true);
 			return 0;
 		}
+	}
+
+	private int forceUpgrade(ServerCommandSource source) {
+		MinecraftServer server = source.getServer();
+		if (server != null) {
+			server.getPlayerManager().getPlayerList().forEach(player -> {
+				UUID playerId = player.getUuid();
+				long currentPlayerTime = playerPlaytimes.getOrDefault(playerId, 0L);
+				grantRank(player, currentPlayerTime);
+			});
+			return 1;
+		} else {
+			LOGGER.error("Server is not available");
+			source.sendFeedback(() -> Text.of("Server is not available"), false);
+			return 0;
+		}
+	}
+
+	private int listRanks(ServerCommandSource source) {
+		source.sendFeedback(() -> Text.of("Rank List:"), false);
+		rankConfigs.forEach(rankConfig -> {
+			source.sendFeedback(() -> Text.of(rankConfig.name + " - " + rankConfig.playtimeThreshold + " seconds"), false);
+		});
+		return 1;
+	}
+
+	private int removeRank(ServerCommandSource source, String name) {
+		for (Iterator<RankConfig> iterator = rankConfigs.iterator(); iterator.hasNext(); ) {
+			RankConfig rankConfig = iterator.next();
+			if (rankConfig.name.equals(name)) {
+				iterator.remove();
+				saveConfig();
+				source.sendFeedback(() -> Text.of("Rank removed: " + name), true);
+				return 1;
+			}
+		}
+		source.sendFeedback(() -> Text.of("Rank not found: " + name), false);
+		return 0;
 	}
 
 	private Supplier<Text> formatPlaytimeMessage(String playerName, long playtime) {

@@ -1,0 +1,11 @@
+{
+	"required": true,
+	"package": "net.nadar.timedrankup.mixin",
+	"compatibilityLevel": "JAVA_17",
+	"mixins": [
+		"ExampleMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

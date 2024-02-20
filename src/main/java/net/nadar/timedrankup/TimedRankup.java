@@ -3,6 +3,7 @@ package net.nadar.timedrankup;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.mojang.authlib.Agent;
+import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.GameProfileRepository;
 import com.mojang.authlib.ProfileLookupCallback;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -30,7 +31,6 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.*;
 import java.util.*;
-import java.util.function.Supplier;
 
 public class TimedRankup implements ModInitializer {
 
@@ -38,8 +38,10 @@ public class TimedRankup implements ModInitializer {
 	private final Map<UUID, Long> playerPlaytimes = new HashMap<>();
 	private static final String PLAYTIME_FILE_PATH = "config/TimedRankup/playtime.txt";
 	private static final String CONFIG_FILE_PATH = "config/TimedRankup/timedrankup_ranks.json";
+	private static final String EXCLUSION_CONFIG_FILE_PATH = "config/TimedRankup/exclusions.json";
 	private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 	private List<RankConfig> rankConfigs;
+	private ExclusionConfig exclusions;
 	private final UserCache userCache;
 
 	// Tab completion for player names
@@ -79,17 +81,26 @@ public class TimedRankup implements ModInitializer {
 
 	private void loadConfig() {
 		File configFile = new File(CONFIG_FILE_PATH);
+		File exclusionFile = new File(EXCLUSION_CONFIG_FILE_PATH);
 		if (!configFile.exists()) {
 			generateDefaultConfig();
 		}
+		if (!exclusionFile.exists()) {
+			generateDefaultExclusionConfig();
+		}
 
-		try (Reader reader = new FileReader(CONFIG_FILE_PATH)) {
+		try (Reader reader = new FileReader(CONFIG_FILE_PATH);
+			 Reader exclusionReader = new FileReader(EXCLUSION_CONFIG_FILE_PATH)) {
 			Config config = gson.fromJson(reader, Config.class);
+			ExclusionConfig exclusionConfig = gson.fromJson(exclusionReader, ExclusionConfig.class);
 			if (config != null && config.ranks != null) {
 				rankConfigs = config.ranks;
 			}
+			if (exclusionConfig != null) {
+				exclusions = exclusionConfig;
+			}
 		} catch (IOException e) {
-			LOGGER.error("Error reading config file: {}", e.getMessage());
+			LOGGER.error("Error reading config files: {}", e.getMessage());
 		}
 	}
 
@@ -100,7 +111,7 @@ public class TimedRankup implements ModInitializer {
 				new RankConfig("Veteran", 21600)
 		);
 
-		Config defaultConfig = new Config(defaultRanks);
+		Config defaultConfig = new Config(defaultRanks); // Exclusions will be added later
 
 		File configFile = new File(CONFIG_FILE_PATH);
 		File parentDirectory = configFile.getParentFile();
@@ -117,6 +128,28 @@ public class TimedRankup implements ModInitializer {
 			LOGGER.info("Default configuration file generated: {}", CONFIG_FILE_PATH);
 		} catch (IOException e) {
 			LOGGER.error("Error generating default config file: {}", e.getMessage());
+		}
+	}
+
+	private void generateDefaultExclusionConfig() {
+		List<String> defaultExclusions = List.of("Admins", "Moderators"); // Example excluded groups
+		ExclusionConfig defaultExclusionConfig = new ExclusionConfig(defaultExclusions);
+
+		File exclusionFile = new File(EXCLUSION_CONFIG_FILE_PATH);
+		File parentDirectory = exclusionFile.getParentFile();
+		if (!parentDirectory.exists()) {
+			boolean success = parentDirectory.mkdirs();
+			if (!success) {
+				LOGGER.error("Failed to create directories for exclusion config file.");
+				return;
+			}
+		}
+
+		try (BufferedWriter writer = new BufferedWriter(new FileWriter(EXCLUSION_CONFIG_FILE_PATH))) {
+			gson.toJson(defaultExclusionConfig, writer);
+			LOGGER.info("Default exclusion configuration file generated: {}", EXCLUSION_CONFIG_FILE_PATH);
+		} catch (IOException e) {
+			LOGGER.error("Error generating default exclusion config file: {}", e.getMessage());
 		}
 	}
 
@@ -149,6 +182,10 @@ public class TimedRankup implements ModInitializer {
 	private final Map<UUID, Set<String>> playersAlreadyUpgraded = new HashMap<>();
 	private void grantRank(ServerPlayerEntity player, long playtime) {
 		if (player != null) {
+			// Check if the player belongs to any excluded group
+			if (isPlayerExcluded(player)) {
+				return;
+			}
 			UUID playerId = player.getUuid();
 			MinecraftServer server = player.getServer();
 			assert server != null;
@@ -350,6 +387,14 @@ public class TimedRankup implements ModInitializer {
 			);
 		});
 	}
+	private void saveConfig() {
+		try (BufferedWriter writer = new BufferedWriter(new FileWriter(CONFIG_FILE_PATH))) {
+			gson.toJson(new Config(rankConfigs), writer);
+			LOGGER.info("Configuration file updated: {}", CONFIG_FILE_PATH);
+		} catch (IOException e) {
+			LOGGER.error("Error saving configuration file: {}", e.getMessage());
+		}
+	}
 
 	private int addRank(ServerCommandSource source, String name, int playtime) {
 		try {
@@ -385,111 +430,153 @@ public class TimedRankup implements ModInitializer {
 		}
 	}
 
-	private void saveConfig() {
-		try (BufferedWriter writer = new BufferedWriter(new FileWriter(CONFIG_FILE_PATH))) {
-			gson.toJson(new Config(rankConfigs), writer);
-			LOGGER.info("Configuration file updated: {}", CONFIG_FILE_PATH);
-		} catch (IOException e) {
-			LOGGER.error("Error saving configuration file: {}", e.getMessage());
-		}
-	}
-
-	private int viewOwnPlaytime(ServerCommandSource source) {
-		UUID playerId = Objects.requireNonNull(source.getPlayer()).getUuid();
-		long playtime = playerPlaytimes.getOrDefault(playerId, 0L);
-		source.sendFeedback(formatPlaytimeMessage(source.getPlayer().getName().getString(), playtime), false);
-		return 1;
-	}
-
-	private int viewPlayerPlaytime(ServerCommandSource source, String playerName) {
-		MinecraftServer server = source.getServer();
-		ServerPlayerEntity player = server.getPlayerManager().getPlayer(playerName);
-		if (player != null) {
-			UUID playerId = player.getUuid();
-			long playtime = playerPlaytimes.getOrDefault(playerId, 0L);
-			source.sendFeedback(formatPlaytimeMessage(playerName, playtime), false);
-			return 1;
-		} else {
-			source.sendFeedback(formatErrorMessage(), true);
-			return 0;
-		}
-	}
-
-	private int forceUpgrade(ServerCommandSource source) {
-		MinecraftServer server = source.getServer();
-		if (server != null) {
-			server.getPlayerManager().getPlayerList().forEach(player -> {
-				UUID playerId = player.getUuid();
-				long currentPlayerTime = playerPlaytimes.getOrDefault(playerId, 0L);
-				grantRank(player, currentPlayerTime);
-			});
-			return 1;
-		} else {
-			LOGGER.error("Server is not available");
-			source.sendFeedback(() -> Text.of("Server is not available"), false);
+	private int removeRank(ServerCommandSource source, String name) {
+		try {
+			RankConfig removedRank = null;
+			for (RankConfig rankConfig : rankConfigs) {
+				if (rankConfig.name.equals(name)) {
+					removedRank = rankConfig;
+					break;
+				}
+			}
+			if (removedRank != null) {
+				rankConfigs.remove(removedRank);
+				saveConfig();
+				source.sendFeedback(() -> Text.of("Rank removed: " + name), true);
+				return 1;
+			} else {
+				source.sendFeedback(() -> Text.of("Rank not found: " + name), false);
+				return 0;
+			}
+		} catch (Exception e) {
+			LOGGER.error("Error executing removeRank command: {}", e.getMessage());
+			source.sendFeedback(() -> Text.of("An unexpected error occurred while executing the command. Please check server logs for details."), false);
 			return 0;
 		}
 	}
 
 	private int listRanks(ServerCommandSource source) {
-		source.sendFeedback(() -> Text.of("Rank List:"), false);
-		rankConfigs.forEach(rankConfig -> {
-			source.sendFeedback(() -> Text.of(rankConfig.name + " - " + rankConfig.playtimeThreshold + " seconds"), false);
-		});
-		return 1;
+		try {
+			if (!rankConfigs.isEmpty()) {
+				source.sendFeedback(() -> Text.of("Ranks:"), false);
+				for (RankConfig rankConfig : rankConfigs) {
+					source.sendFeedback(() -> Text.of("- " + rankConfig.name + " - Playtime Threshold: " + rankConfig.playtimeThreshold + " seconds"), false); // Update message to include seconds
+				}
+			} else {
+				source.sendFeedback(() -> Text.of("No ranks configured."), false);
+			}
+			return 1;
+		} catch (Exception e) {
+			LOGGER.error("Error executing listRanks command: {}", e.getMessage());
+			source.sendFeedback(() -> Text.of("An unexpected error occurred while executing the command. Please check server logs for details."), false);
+			return 0;
+		}
+	}
+	private void grantRank(ServerPlayerEntity player) {
 	}
 
-	private int removeRank(ServerCommandSource source, String name) {
-		for (Iterator<RankConfig> iterator = rankConfigs.iterator(); iterator.hasNext(); ) {
-			RankConfig rankConfig = iterator.next();
-			if (rankConfig.name.equals(name)) {
-				iterator.remove();
-				saveConfig();
-				source.sendFeedback(() -> Text.of("Rank removed: " + name), true);
+	private int forceUpgrade(ServerCommandSource source) {
+		try {
+			MinecraftServer server = source.getServer();
+			if (server != null) {
+				server.getPlayerManager().getPlayerList().forEach(this::grantRank);
+				source.sendFeedback(() -> Text.of("Forced rank upgrade process executed for all online players."), true);
 				return 1;
+			} else {
+				LOGGER.error("Server is not available");
+				source.sendFeedback(() -> Text.of("An unexpected error occurred while executing the command. Please check server logs for details."), false);
+				return 0;
+			}
+		} catch (Exception e) {
+			LOGGER.error("Error executing forceUpgrade command: {}", e.getMessage());
+			source.sendFeedback(() -> Text.of("An unexpected error occurred while executing the command. Please check server logs for details."), false);
+			return 0;
+		}
+	}
+
+	private int viewOwnPlaytime(ServerCommandSource source) {
+		if (source.getEntity() instanceof ServerPlayerEntity) {
+			ServerPlayerEntity player = (ServerPlayerEntity) source.getEntity();
+			UUID playerId = player.getUuid();
+			long playtime = playerPlaytimes.getOrDefault(playerId, 0L);
+			source.sendFeedback(() -> Text.of("Your total playtime: " + formatPlaytime(playtime)), false);
+			return 1;
+		} else {
+			source.sendFeedback(() -> Text.of("This command can only be executed by players."), false);
+			return 0;
+		}
+	}
+
+	private int viewPlayerPlaytime(ServerCommandSource source, String playerName) {
+		Optional<GameProfile> playerId = userCache.findByName(playerName);
+		if (playerId.isPresent()) {
+			long playtime = playerPlaytimes.getOrDefault(playerId, 0L);
+			source.sendFeedback(() -> Text.of(playerName + "'s total playtime: " + formatPlaytime(playtime)), false);
+			return 1;
+		} else {
+			source.sendFeedback(() -> Text.of("Player not found: " + playerName), false);
+			return 0;
+		}
+	}
+
+	private String formatPlaytime(long playtimeInSeconds) {
+		long hours = playtimeInSeconds / 3600;
+		long minutes = (playtimeInSeconds % 3600) / 60;
+		long seconds = playtimeInSeconds % 60;
+		return String.format("%d hours, %d minutes, %d seconds", hours, minutes, seconds);
+	}
+
+	private boolean isPlayerExcluded(ServerPlayerEntity player) {
+		if (exclusions == null || exclusions.excludedGroups == null || exclusions.excludedGroups.isEmpty()) {
+			return false; // No exclusions configured
+		}
+
+		LuckPerms luckPerms = LuckPermsProvider.get();
+		if (luckPerms == null) {
+			LOGGER.error("LuckPerms is not initialized.");
+			return false; // Unable to determine exclusion status
+		}
+
+		User user = luckPerms.getUserManager().getUser(player.getName().getString());
+		if (user == null) {
+			LOGGER.error("User '{}' not found.", player.getName().getString());
+			return false; // Unable to determine exclusion status
+		}
+
+		List<Group> inheritedGroups = (List<Group>) user.getInheritedGroups(QueryOptions.nonContextual());
+		for (Group group : inheritedGroups) {
+			if (exclusions.excludedGroups.contains(group.getName())) {
+				return true; // Player belongs to an excluded group
 			}
 		}
-		source.sendFeedback(() -> Text.of("Rank not found: " + name), false);
-		return 0;
+
+		return false; // Player does not belong to any excluded group
 	}
 
-	private Supplier<Text> formatPlaytimeMessage(String playerName, long playtime) {
-		long seconds = playtime;
-		long minutes = seconds / 60;
-		long hours = minutes / 60;
+	// Model classes for configuration
+	private static class RankConfig {
+		private String name;
+		private int playtimeThreshold;
 
-		minutes %= 60;
-		seconds %= 60;
-		hours %= 24;
-
-		long days = playtime / (60 * 60 * 24);
-
-		final long finalHours = hours;
-		final long finalMinutes = minutes;
-		final long finalSeconds = seconds;
-
-		return () -> Text.of(playerName + " has played for " + days + " days, " + finalHours + " hours, " + finalMinutes + " minutes, and " + finalSeconds + " seconds.");
-	}
-
-	private Supplier<Text> formatErrorMessage() {
-		return () -> Text.of("Player not found.");
+		public RankConfig(String name, int playtimeThreshold) {
+			this.name = name;
+			this.playtimeThreshold = playtimeThreshold;
+		}
 	}
 
 	private static class Config {
-		List<RankConfig> ranks;
+		private List<RankConfig> ranks;
 
-		Config(List<RankConfig> ranks) {
+		public Config(List<RankConfig> ranks) {
 			this.ranks = ranks;
 		}
 	}
 
-	private static class RankConfig {
-		String name;
-		int playtimeThreshold;
+	private static class ExclusionConfig {
+		private List<String> excludedGroups;
 
-		RankConfig(String name, int playtimeThreshold) {
-			this.name = name;
-			this.playtimeThreshold = playtimeThreshold;
+		public ExclusionConfig(List<String> excludedGroups) {
+			this.excludedGroups = excludedGroups;
 		}
 	}
 }

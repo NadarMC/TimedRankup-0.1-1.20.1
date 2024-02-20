@@ -127,10 +127,8 @@ public class TimedRankup implements ModInitializer {
 			ServerCommandSource source = server.getCommandSource().withLevel(2).withOutput(new SystemOutCommandOutput(System.out));
 
 			String currentRank = getCurrentRank(player.getName().getString());
-			LOGGER.info("Player {}: Current rank: {}", player.getName().getString(), currentRank);
-			LOGGER.info("Player {}: Current playtime: {}", player.getName().getString(), playtime);
 
-			String maxRank = getMaxRank(); // Dynamically determine the maximum rank
+            String maxRank = getMaxRank(); // Dynamically determine the maximum rank
 
 			if (currentRank != null) {
 				// Check if the player has reached the maximum rank
@@ -156,7 +154,7 @@ public class TimedRankup implements ModInitializer {
 									markPlayerAsUpgraded(playerId, rankConfig.name); // Mark rank as granted for this player
 									break; // Exit the loop after granting the rank
 								} catch (Exception e) {
-									LOGGER.error("Error granting rank to player {}: {}", player.getName().getString(), e.getMessage());
+									//LOGGER.error("Error granting rank to player {}: {}", player.getName().getString(), e.getMessage());
 								}
 							}
 						}
@@ -165,10 +163,10 @@ public class TimedRankup implements ModInitializer {
 					LOGGER.info("Player {} has reached the maximum rank: {}", player.getName().getString(), maxRank);
 				}
 			} else {
-				LOGGER.error("Failed to retrieve current rank for player {}.", player.getName().getString());
+				//LOGGER.error("Failed to retrieve current rank for player {}.", player.getName().getString());
 			}
 		} else {
-			LOGGER.error("Player object is null.");
+			//LOGGER.error("Player object is null.");
 		}
 	}
 
@@ -204,39 +202,39 @@ public class TimedRankup implements ModInitializer {
 			return null;
 		}
 
-		LOGGER.info("Retrieving current rank for player: {}", playerName);
+		//LOGGER.info("Retrieving current rank for player: {}", playerName);
 		User user = luckPerms.getUserManager().getUser(playerName);
 		if (user == null) {
 			LOGGER.error("User '{}' not found.", playerName);
 			return null;
 		}
 
-		LOGGER.info("User '{}' found.", playerName);
+		//LOGGER.info("User '{}' found.", playerName);
 
 		// Check if player's LuckPerms groups correspond to any rank
 		List<Group> inheritedGroups = (List<Group>) user.getInheritedGroups(QueryOptions.nonContextual());
 		for (Group group : inheritedGroups) {
 			String groupName = group.getName();
-			LOGGER.info("Checking inherited group: {}", groupName);
+			//LOGGER.info("Checking inherited group: {}", groupName);
 			for (RankConfig rankConfig : rankConfigs) {
 				if (rankConfig.name.equalsIgnoreCase(groupName)) {
-					LOGGER.info("Match found. Rank: {}", groupName);
+					//LOGGER.info("Match found. Rank: {}", groupName);
 					return groupName;
 				}
 			}
-			LOGGER.info("Does group '{}' match any rank name? false", groupName);
+			//LOGGER.info("Does group '{}' match any rank name? false", groupName);
 		}
 
 		// Assign the "Pioneer" rank if the player's playtime exceeds its threshold
 		long playerPlaytime = playerPlaytimes.getOrDefault(user.getUniqueId(), 0L);
 		for (RankConfig rankConfig : rankConfigs) {
 			if (playerPlaytime >= rankConfig.playtimeThreshold) {
-				LOGGER.info("Player {} has exceeded playtime threshold for rank: {}", playerName, rankConfig.name);
+				//LOGGER.info("Player {} has exceeded playtime threshold for rank: {}", playerName, rankConfig.name);
 				return rankConfig.name;
 			}
 		}
 
-		LOGGER.error("No matching rank found for player: {}", playerName);
+		//LOGGER.error("No matching rank found for player: {}", playerName);
 		return null;
 	}
 

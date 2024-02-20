@@ -92,7 +92,7 @@ public class TimedRankup implements ModInitializer {
 		}
 	}
 
-	private static final long SAVE_INTERVAL_SECONDS = 10; // Save every 10 seconds
+	private static final long SAVE_INTERVAL_SECONDS = 900; // Save every 900 seconds, or 15mins
 	private long lastSaveTime = 0;
 
 	private void onServerTick(MinecraftServer server) {
@@ -160,7 +160,7 @@ public class TimedRankup implements ModInitializer {
 						}
 					}
 				} else {
-					LOGGER.info("Player {} has reached the maximum rank: {}", player.getName().getString(), maxRank);
+					//LOGGER.info("Player {} has reached the maximum rank: {}", player.getName().getString(), maxRank);
 				}
 			} else {
 				//LOGGER.error("Failed to retrieve current rank for player {}.", player.getName().getString());
